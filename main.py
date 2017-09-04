@@ -1,14 +1,14 @@
-import model
-import tensorflow as tf
 import dbas
-import matplotlib.pyplot as plt
+import tensorflow as tf
 
-gen = model.make_generator(28, 28, 1, 3)
-dis = model.make_discriminator(3, 32)
+from gan import ConvNetDiscriminator, DeconvGenerator, GAN
 
-gan_fn = model.make_GAN(gen, dis, tf.train.AdamOptimizer(1e-4), tf.train.AdamOptimizer(1e-4), 10)
+gen = DeconvGenerator(layers=2, filters=32)
+dis = ConvNetDiscriminator(layers=2, filters=32)
 
-gan = tf.estimator.Estimator(gan_fn, "mnist_gan")
+gan = GAN(gen, dis, tf.train.AdamOptimizer(), tf.train.AdamOptimizer(), 100)
+
+gan = tf.estimator.Estimator(gan.model_fn, "mnist_gan")
 
 
 def input_fn(data, shuffle):
@@ -16,8 +16,21 @@ def input_fn(data, shuffle):
                                               batch_size=32)
 
 
+def input_from_files():
+    def make_input():
+        filenames = tf.train.match_filenames_once("*.jpg")
+        filenames = tf.train.string_input_producer(filenames)
+        reader = tf.WholeFileReader()
+        _, image_file = reader.read(filenames)
+        image = tf.image.decode_jpeg(image_file)
+        resized = tf.image.resize_images(image, [64, 64])
+        images = tf.train.shuffle_batch([resized], batch_size=32, capacity=100, min_after_dequeue=10)
+
+        return {"image": images}, None
+
+
 def random_input_fn(size):
-    return lambda: {"z": tf.random_uniform((1, size), 0.0, 1.0), "image": tf.zeros((1, 28, 28, 1))}
+    return lambda: {"z": tf.random_uniform((1, size), -1.0, 1.0), "image": tf.zeros((1, 28, 28, 1))}
 
 
 mnist = dbas.datasets.MNIST()
