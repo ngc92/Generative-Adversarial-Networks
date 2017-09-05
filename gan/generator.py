@@ -1,16 +1,25 @@
 from collections import namedtuple
 import tensorflow as tf
 import math
-from .tfutil import get_kernel_regularizer, track_weights, do_regularized, crop_to_fit
+
+from .tfutil import get_kernel_regularizer, track_weights, do_regularized, crop_to_fit, concat_condition_vector, \
+    ScopedCall
+from .conditioner import NoConditioner
+import abc
 
 GeneratorResult = namedtuple("GeneratorResult", ["image", "unscaled"])
 
 
-class Generator:
+@ScopedCall
+class Generator(abc.ABC):
     def __init__(self):
         self._output_width = 0
         self._output_height = 0
         self._output_channels = 0
+        self._conditioner = NoConditioner()
+
+    def add_conditioning(self, conditioner):
+        self._conditioner = conditioner
 
     def set_output_shape(self, shape):
         assert len(shape) == 3
@@ -31,13 +40,14 @@ class Generator:
         return self._output_channels
 
     @track_weights
-    def __call__(self, latent, mode):
+    def __call__(self, latent, attributes, mode):
         assert self.output_width > 0 and self.output_height > 0 and self.output_channels > 0
-        result = self.make_generator(latent, mode)
+        result = self._build(latent, attributes, mode)
         assert isinstance(result, GeneratorResult)
         return result
 
-    def make_generator(self, latent, mode):
+    @abc.abstractmethod
+    def _build(self, latent, attributes, mode):
         raise NotImplementedError()
 
 
@@ -48,9 +58,9 @@ class DeconvGenerator(Generator):
         self._layers = layers
         self._regularizer = regularizer
 
-        self.make_generator = do_regularized(regularizer)(self.make_generator)
+        self._build = do_regularized(regularizer)(self._build)
 
-    def make_generator(self, latent, mode):
+    def _build(self, latent, attributes, mode):
         s_h, s_w = self.output_width, self.output_height
         s_sh, s_sw = [s_h], [s_w]
 
@@ -59,8 +69,13 @@ class DeconvGenerator(Generator):
             s_sh += [int(math.ceil(float(s_sh[-1]) / 2))]
             s_sw += [int(math.ceil(float(s_sw[-1]) / 2))]
 
+        condition_vector = self._conditioner(attributes)
+
         # generate initial data
         z = latent
+        if condition_vector is not None:
+            z = tf.concat([z, condition_vector], axis=1)
+
         projected = tf.layers.dense(z, s_sh[-1] * s_sw[-1] * filters, name="z_projection", activation=None,
                                     kernel_initializer=tf.truncated_normal_initializer(stddev=0.02),
                                     kernel_regularizer=get_kernel_regularizer())
@@ -80,6 +95,9 @@ class DeconvGenerator(Generator):
             filters = int(filters / 2)
             if layer == self._layers - 1:
                 filters = self.output_channels
+
+            h = concat_condition_vector(h, condition_vector)
+
             h = tf.layers.conv2d_transpose(h, filters, kernel_size=5, strides=2, padding="same", activation=None,
                                            kernel_initializer=tf.truncated_normal_initializer(stddev=0.02),
                                            kernel_regularizer=get_kernel_regularizer(), name="deconv_%i" % layer)
