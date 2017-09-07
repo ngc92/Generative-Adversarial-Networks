@@ -52,10 +52,12 @@ class Generator(abc.ABC):
 
 
 class DeconvGenerator(Generator):
-    def __init__(self, filters, layers, regularizer=None):
+    def __init__(self, filters, layers, regularizer=None, kernel_size=5, stride=2):
         super(DeconvGenerator, self).__init__()
         self._filters = filters
         self._layers = layers
+        self._kernel_size = kernel_size
+        self._stride = stride
         self._regularizer = regularizer
 
         self._build = do_regularized(regularizer)(self._build)
@@ -79,8 +81,10 @@ class DeconvGenerator(Generator):
         projected = tf.layers.dense(z, s_sh[-1] * s_sw[-1] * filters, name="z_projection", activation=None,
                                     kernel_initializer=tf.truncated_normal_initializer(stddev=0.02),
                                     kernel_regularizer=get_kernel_regularizer())
-        h = tf.layers.batch_normalization(projected, training=(mode == tf.estimator.ModeKeys.TRAIN),
-                                          name="batch_norm_projection")
+        # It seems there is no batch-norm here
+        #h = tf.layers.batch_normalization(projected, training=(mode == tf.estimator.ModeKeys.TRAIN),
+        #                                  name="batch_norm_projection")
+        h = projected
         h = tf.nn.relu(h)
         h = tf.reshape(h, (-1, s_sw[-1], s_sh[-1], filters))
 
@@ -89,7 +93,7 @@ class DeconvGenerator(Generator):
             tf.summary.image("projection_w", projection_w[None, :, :, None])
 
         for i in range(min(filters, 3)):
-            tf.summary.image("z_%i" % i, h[:, :, :, i:1 + i])
+            tf.summary.image("z_%i" % i, h[:, :, :, i:i+1])
 
         for layer in range(self._layers):
             filters = int(filters / 2)
@@ -98,10 +102,12 @@ class DeconvGenerator(Generator):
 
             h = concat_condition_vector(h, condition_vector)
 
-            h = tf.layers.conv2d_transpose(h, filters, kernel_size=5, strides=2, padding="same", activation=None,
+            h = tf.layers.conv2d_transpose(h, filters, kernel_size=self._kernel_size, strides=self._stride,
+                                           padding="same", activation=None,
                                            kernel_initializer=tf.truncated_normal_initializer(stddev=0.02),
                                            kernel_regularizer=get_kernel_regularizer(), name="deconv_%i" % layer)
 
+            # batchnorm and ReLU for all but the last layer.
             if layer != self._layers - 1:
                 h = tf.layers.batch_normalization(h, training=(mode == tf.estimator.ModeKeys.TRAIN),
                                                   name="batch_norm_%i" % layer)

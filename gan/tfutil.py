@@ -22,7 +22,8 @@ def do_regularized(regularizer):
 
 
 def lrelu(x):
-    return tf.maximum(x, 0.2 * x)
+    with tf.name_scope("LReLu"):
+        return tf.maximum(x, 0.2 * x)
 
 
 def track_weights(fun):
@@ -75,6 +76,12 @@ def concat_condition_vector(image, condition_vector):
             return image
 
 
+def accuracy(labels, predictions, name="accuracy"):
+    with tf.name_scope(name):
+        is_equal = tf.cast(tf.equal(labels, predictions), tf.float32)
+        return tf.reduce_mean(is_equal)
+
+
 class ScopeInfo:
     def __init__(self):
         self._current_graph = None
@@ -118,7 +125,6 @@ def ScopedCall(cls):
         reuse = self._scope_info.reuse
 
         with tf.variable_scope(scope, reuse=reuse) as var_scope:
-            print("IN_SCOPE")
             result = call(self, *args, **kwargs)
             self._scope_info.reuse = True
             self._scope_info.scope = var_scope
@@ -127,3 +133,5 @@ def ScopedCall(cls):
     cls.__call__ = scoped_call
     cls.__init__ = new_init
     return cls
+
+

@@ -3,6 +3,7 @@ from collections import namedtuple
 
 import tensorflow as tf
 import gan
+import gan.tfutil as tfutil
 from gan.tfutil import log_vars
 
 
@@ -19,11 +20,23 @@ class GAN:
         self._z_size = z_size
         self._conditioner = gan.NoConditioner()
         self._label_smoothing = label_smoothing
+        self._auxillaries = []
 
-    def add_conditioning(self, conditioner: gan.Conditioner):
+        # caching variables during build process
+        self._generator_result = None
+        self._d_real_result = None
+        self._d_fake_result = None
+
+    def add_conditioning(self, conditioner: gan.Conditioner, generator=True, discriminator=True):
         self._conditioner = conditioner
-        self._discriminator.add_conditioning(conditioner)
-        self._generator.add_conditioning(conditioner)
+        if discriminator:
+            self._discriminator.add_conditioning(conditioner)
+        if generator:
+            self._generator.add_conditioning(conditioner)
+
+    def add_auxillary(self, auxillary: gan.Auxillary, strength=1.0):
+        auxillary.set_strength(strength)
+        self._auxillaries.append(auxillary)
 
     def set_optimizer(self, target, optimizer: tf.train.Optimizer):
         assert isinstance(optimizer, tf.train.Optimizer)
@@ -59,6 +72,7 @@ class GAN:
         conditioning_attributes = self._conditioner.make_attributes(features, labels)
 
         result = self.build_generator(rand_z, conditioning_attributes, mode)
+        self._generator_result = result
 
         # check that we generate images in the format that the discriminator knows from the real
         # examples.
@@ -67,36 +81,40 @@ class GAN:
         with tf.name_scope("generator/"):
             generated = result.image
 
-            tf.summary.image("fake_images", generated, 0.0)
+            tf.summary.image("fake_images", generated)
             tf.summary.histogram("unbounded_pixels", result.unscaled)
             tf.summary.histogram("fake_image_pixels", generated)
 
-        p, l = self.build_discriminator(generated, conditioning_attributes, mode)
-        tf.summary.histogram("discriminator/fake_p", p)
-        tf.summary.histogram("discriminator/fake_l", l)
+        result = self.build_discriminator(generated, conditioning_attributes, mode)
+        self._d_fake_result = result
+        tf.summary.histogram("discriminator/fake_p", result.probability)
+        tf.summary.histogram("discriminator/fake_l", result.logits)
 
         # Train the generator
         with tf.name_scope(self._loss_scope):
 
-            gen_loss = tf.losses.sigmoid_cross_entropy(tf.ones_like(l), logits=l,
+            gen_loss = tf.losses.sigmoid_cross_entropy(tf.ones_like(result.logits), logits=result.logits,
                                                        scope="generator_loss",
                                                        reduction=tf.losses.Reduction.MEAN)
-            dis_loss = tf.losses.sigmoid_cross_entropy(tf.zeros_like(l), logits=l,
+            dis_loss = tf.losses.sigmoid_cross_entropy(tf.zeros_like(result.logits), logits=result.logits,
                                                        scope="discriminator_fake_loss",
                                                        reduction=tf.losses.Reduction.MEAN)
 
             tf.summary.scalar("fake_loss", dis_loss)
             tf.summary.scalar("generator_loss", gen_loss)
-        accuracy = tf.metrics.accuracy(tf.zeros_like(l), tf.round(p), name="fake_accuracy")
+        accuracy = tf.metrics.accuracy(tf.zeros_like(result.logits), tf.round(result.probability), name="fake_accuracy")
+        acc_sum = tf.summary.scalar("fake_accuracy",
+                                    tfutil.accuracy(tf.zeros_like(result.logits),  tf.round(result.probability)))
 
         return self.FakeLoss(gen_loss, dis_loss, accuracy)
 
     def get_real_loss(self, features, labels, mode):
-        p, l = self.build_discriminator(features["image"], self._conditioner.make_attributes(features, labels), mode)
+        result = self.build_discriminator(features["image"], self._conditioner.make_attributes(features, labels), mode)
+        self._d_real_result = result
 
         tf.summary.image("discriminator/real_images", features["image"])
-        tf.summary.histogram("discriminator/real_p", p)
-        tf.summary.histogram("discriminator/real_l", l)
+        tf.summary.histogram("discriminator/real_p", result.probability)
+        tf.summary.histogram("discriminator/real_l", result.logits)
         tf.summary.histogram("discriminator/real_image_pixels", features["image"])
 
         with tf.name_scope(self._loss_scope):
@@ -104,12 +122,14 @@ class GAN:
             # Salimans et al. - 2016 - Improved Techniques for Training GANs, only real samples
             # should be smoothed.
             # see also https://github.com/soumith/ganhacks/issues/10.
-            dis_loss = tf.losses.sigmoid_cross_entropy(tf.ones_like(l), logits=l,
+            dis_loss = tf.losses.sigmoid_cross_entropy(tf.ones_like(result.logits), logits=result.logits,
                                                        label_smoothing=self._label_smoothing,
                                                        scope="discriminator_real_loss",
                                                        reduction=tf.losses.Reduction.MEAN)
             tf.summary.scalar("real_loss", dis_loss)
-        accuracy = tf.metrics.accuracy(tf.ones_like(l), tf.round(p), name="real_accuracy")
+        accuracy = tf.metrics.accuracy(tf.ones_like(result.logits), tf.round(result.probability), name="real_accuracy")
+        acc_sum = tf.summary.scalar("real_accuracy",
+                                    tfutil.accuracy(tf.ones_like(result.logits), tf.round(result.probability)))
 
         return self.RealLoss(dis_loss, accuracy)
 
@@ -143,15 +163,32 @@ class GAN:
         log_vars(generator_vars, "Trainable variables of the generator: ")
         log_vars(discriminator_vars, "Trainable variables of the discriminator: ")
 
+        # build the auxillaries
+        aux_loss = gan.AuxillaryResult()
+        for aux in self._auxillaries:
+            aux = aux  # type: gan.Auxillary
+            aux_loss += aux(discriminator_real=self._d_real_result, discriminator_fake=self._d_fake_result,
+                            features=features, labels=labels,
+                            scope="auxillary")
+
         def train_discriminator():
-            loss = discriminator_loss + tf.losses.get_regularization_loss("discriminator")
-            return self._discriminator_optimizer.minimize(loss,
-                                                          tf.train.get_global_step(), var_list=discriminator_vars,
+            with tf.name_scope(loss_scope):
+                regularization_loss = tf.losses.get_regularization_loss("discriminator")
+                loss = discriminator_loss + regularization_loss + aux_loss.discriminator
+                tf.summary.scalar("auxillary_disciminator_loss", aux_loss.discriminator)
+                tf.summary.scalar("generator_regularizer_loss", regularization_loss)
+            vars = discriminator_vars + aux_loss.discriminator_weights
+            return self._discriminator_optimizer.minimize(loss, tf.train.get_global_step(), var_list=vars,
                                                           name="discriminator_fake_training")
 
         def train_generator():
-            return self._generator_optimizer.minimize(generator_loss + tf.losses.get_regularization_loss("generator"),
-                                                      tf.train.get_global_step(), var_list=generator_vars,
+            with tf.name_scope(loss_scope):
+                regularization_loss = tf.losses.get_regularization_loss("generator")
+                loss = generator_loss + regularization_loss + aux_loss.generator
+                tf.summary.scalar("auxillary_generator_loss", aux_loss.generator)
+                tf.summary.scalar("generator_regularizer_loss", regularization_loss)
+            vars = generator_vars + aux_loss.generator_weights
+            return self._generator_optimizer.minimize(loss, tf.train.get_global_step(), var_list=vars,
                                                       name="generator_training")
 
         if mode == tf.estimator.ModeKeys.TRAIN:
@@ -162,16 +199,23 @@ class GAN:
         else:
             train_op = None
 
+
         if mode == tf.estimator.ModeKeys.PREDICT:
             evals = {}
             predictions = {
+                "original": features["image"],
+                "class": features["class"],
                 "generated": self.generate(features, labels).image
             }
+            predictions.update(aux_loss.predictions)
+
         else:
             with tf.name_scope("metrics"):
                 evals = {
                     "metrics/discriminator_fake_loss": tf.metrics.mean(fake_loss.discriminator),
                     "metrics/discriminator_real_loss": tf.metrics.mean(real_loss.discriminator),
+                    "metrics/discriminator_aux_loss": tf.metrics.mean(aux_loss.discriminator),
+                    "metrics/generator_aux_loss": tf.metrics.mean(aux_loss.generator),
                     "metrics/generator_loss": tf.metrics.mean(generator_loss),
                     "metrics/discriminator_loss": tf.metrics.mean(discriminator_loss),
                     "metrics/accuracy_fake": fake_loss.accuracy,

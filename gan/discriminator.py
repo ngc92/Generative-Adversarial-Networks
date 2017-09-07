@@ -1,4 +1,6 @@
 from collections import namedtuple
+from numbers import Integral
+
 import tensorflow as tf
 import numpy as np
 from .tfutil import lrelu, get_kernel_regularizer, track_weights, do_regularized, concat_condition_vector, ScopedCall
@@ -29,11 +31,14 @@ class Discriminator(abc.ABC):
 
 
 class ConvNetDiscriminator(Discriminator):
-    def __init__(self, layers, filters, kernel_size=5, regularizer=None, dropout=None):
+    def __init__(self, layers, filters, regularizer=None, dropout=None, kernel_size=5, stride=2):
         super(ConvNetDiscriminator, self).__init__()
         self._layers = layers
         self._filters = filters
         self._kernel_size = kernel_size
+        if isinstance(stride, Integral):
+            stride = [stride] * layers
+        self._stride = stride
         self._regularizer = regularizer
         self._dropout = dropout
 
@@ -48,7 +53,7 @@ class ConvNetDiscriminator(Discriminator):
 
         for layer in range(self._layers):
             h = concat_condition_vector(h, condition_vector)
-            h = self._conv_layer(h, current_filters, mode)
+            h = self._conv_layer(h, current_filters, mode, layer)
             if self._dropout is not None:
                 h = tf.layers.dropout(h, rate=self._dropout, training=(mode == tf.estimator.ModeKeys.TRAIN))
             current_filters *= 2
@@ -60,10 +65,12 @@ class ConvNetDiscriminator(Discriminator):
 
         return DiscriminatorResult(probability=tf.nn.sigmoid(h4), logits=h4, features=flat)
 
-    def _conv_layer(self, input_, filters, mode):
-        h = tf.layers.conv2d(input_, filters, kernel_size=self._kernel_size, strides=(2, 2),
+    def _conv_layer(self, input_, filters, mode, id):
+        stride = self._stride[id]
+        h = tf.layers.conv2d(input_, filters, kernel_size=self._kernel_size, strides=stride,
                              padding="same", activation=None,
                              kernel_initializer=tf.truncated_normal_initializer(stddev=0.02),
                              kernel_regularizer=get_kernel_regularizer())
-        h = tf.layers.batch_normalization(h, training=(mode == tf.estimator.ModeKeys.TRAIN))
+        if id != 0:
+            h = tf.layers.batch_normalization(h, training=(mode == tf.estimator.ModeKeys.TRAIN))
         return lrelu(h)
