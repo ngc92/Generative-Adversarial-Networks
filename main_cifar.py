@@ -1,7 +1,7 @@
 import dbas
 import tensorflow as tf
 
-from gan import ConvNetDiscriminator, DeconvGenerator, GAN, ClassConditioner, AuxillaryClassifier, FeatureMatching
+from gan import ConvNetDiscriminator, DeconvGenerator, GAN, ClassConditioner, AuxiliaryClassifier, FeatureMatching
 import numpy as np
 
 # as in the AuxGan Paper
@@ -12,7 +12,7 @@ dis = ConvNetDiscriminator(layers=6, filters=16, regularizer=tf.contrib.layers.l
 gan = GAN(gen, dis, 100)
 gan.add_conditioning(ClassConditioner(10), discriminator=False)
 gan.add_auxillary(FeatureMatching())
-gan.add_auxillary(AuxillaryClassifier(10))
+gan.add_auxillary(AuxiliaryClassifier(10))
 
 gan = tf.estimator.Estimator(gan.model_fn, "cifar_gan")
 
@@ -30,17 +30,26 @@ def random_input_fn(size, classes):
 
 cifar = dbas.datasets.CIFAR()
 
-gan.train(input_fn=input_fn(cifar.train, True), max_steps=50000*100/64)
-print(gan.evaluate(input_fn(cifar.test, shuffle=False)))
+#gan.train(input_fn=input_fn(cifar.train, True), max_steps=50000*100/64)
+#print(gan.evaluate(input_fn(cifar.test, shuffle=False)))
 
 predictor = gan.predict(random_input_fn(100, np.arange(0, 10, 1)), predict_keys=["generated"])
 i = 0
+j = 0
+images = []
+row = []
 for prediction in predictor:
-    import scipy.misc
+    row += [prediction["generated"]]
 
-    scipy.misc.imsave("%i.png" % i, prediction["generated"])
     i += 1
     if i == 10:
-        break
+        images += [np.concatenate(row, axis=1)]
+        row = []
+        i = 0
+        j += 1
+        if j == 10:
+            break
 
 
+import scipy.misc
+scipy.misc.imsave("cifar.png", np.concatenate(images, axis=0))

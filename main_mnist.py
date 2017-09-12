@@ -2,7 +2,7 @@ import dbas
 import tensorflow as tf
 import numpy as np
 
-from gan import ConvNetDiscriminator, DeconvGenerator, GAN, ClassConditioner, FeatureMatching, AuxillaryClassifier
+from gan import ConvNetDiscriminator, DeconvGenerator, GAN, ClassConditioner, FeatureMatching, AuxiliaryClassifier
 
 gen = DeconvGenerator(layers=2, filters=32)
 dis = ConvNetDiscriminator(layers=2, filters=32)
@@ -10,7 +10,7 @@ dis = ConvNetDiscriminator(layers=2, filters=32)
 gan = GAN(gen, dis, 100)
 gan.add_conditioning(ClassConditioner(10))
 gan.add_auxillary(FeatureMatching())
-gan.add_auxillary(AuxillaryClassifier(10))
+gan.add_auxillary(AuxiliaryClassifier(10))
 
 gan = tf.estimator.Estimator(gan.model_fn, "mnist_gan")
 

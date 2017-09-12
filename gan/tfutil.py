@@ -1,6 +1,6 @@
 import abc
 import functools
-from contextlib import contextmanager
+from contextlib import contextmanager, ContextDecorator
 
 import tensorflow as tf
 
@@ -135,3 +135,30 @@ def ScopedCall(cls):
     return cls
 
 
+class CollectedWeights:
+    def __init__(self):
+        self._starting_vars = set()
+        self._all_vars = None
+
+    def __enter__(self):
+        self._starting_vars = set(tf.trainable_variables())
+        return self
+
+    def __exit__(self, *args):
+        self._all_vars = self.weights
+
+    def get(self):
+        return self.weights
+
+    @property
+    def weights(self):
+        if self._all_vars is None:
+            return set(tf.trainable_variables()) - self._starting_vars
+        else:
+            return self._all_vars
+
+    def __contains__(self, item):
+        return item in self.weights
+
+    def __iter__(self):
+        return self.weights.__iter__()

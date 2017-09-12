@@ -34,7 +34,7 @@ class GAN:
         if generator:
             self._generator.add_conditioning(conditioner)
 
-    def add_auxillary(self, auxillary: gan.Auxillary, strength=1.0):
+    def add_auxillary(self, auxillary: gan.Auxiliary, strength=1.0):
         auxillary.set_strength(strength)
         self._auxillaries.append(auxillary)
 
@@ -164,30 +164,31 @@ class GAN:
         log_vars(discriminator_vars, "Trainable variables of the discriminator: ")
 
         # build the auxillaries
-        aux_loss = gan.AuxillaryResult()
+        aux_loss = gan.AuxiliaryResult()
         for aux in self._auxillaries:
-            aux = aux  # type: gan.Auxillary
+            aux = aux  # type: gan.Auxiliary
             aux_loss += aux(discriminator_real=self._d_real_result, discriminator_fake=self._d_fake_result,
                             features=features, labels=labels,
-                            scope="auxillary")
+                            scope="auxiliary")
 
         def train_discriminator():
             with tf.name_scope(loss_scope):
                 regularization_loss = tf.losses.get_regularization_loss("discriminator")
-                loss = discriminator_loss + regularization_loss + aux_loss.discriminator
-                tf.summary.scalar("auxillary_disciminator_loss", aux_loss.discriminator)
+                loss = discriminator_loss + regularization_loss + aux_loss.discriminator_loss
+                tf.summary.scalar("auxiliary_disciminator_loss", aux_loss.discriminator_loss)
                 tf.summary.scalar("generator_regularizer_loss", regularization_loss)
-            vars = discriminator_vars + aux_loss.discriminator_weights
+            print(aux_loss.discriminator_weights)
+            vars = discriminator_vars + list(aux_loss.discriminator_weights)
             return self._discriminator_optimizer.minimize(loss, tf.train.get_global_step(), var_list=vars,
                                                           name="discriminator_fake_training")
 
         def train_generator():
             with tf.name_scope(loss_scope):
                 regularization_loss = tf.losses.get_regularization_loss("generator")
-                loss = generator_loss + regularization_loss + aux_loss.generator
-                tf.summary.scalar("auxillary_generator_loss", aux_loss.generator)
+                loss = generator_loss + regularization_loss + aux_loss.generator_loss
+                tf.summary.scalar("auxiliary_generator_loss", aux_loss.generator_loss)
                 tf.summary.scalar("generator_regularizer_loss", regularization_loss)
-            vars = generator_vars + aux_loss.generator_weights
+            vars = generator_vars + list(aux_loss.generator_weights)
             return self._generator_optimizer.minimize(loss, tf.train.get_global_step(), var_list=vars,
                                                       name="generator_training")
 
@@ -204,7 +205,7 @@ class GAN:
             evals = {}
             predictions = {
                 "original": features["image"],
-                "class": features["class"],
+#                "class": features["class"],
                 "generated": self.generate(features, labels).image
             }
             predictions.update(aux_loss.predictions)
@@ -214,8 +215,8 @@ class GAN:
                 evals = {
                     "metrics/discriminator_fake_loss": tf.metrics.mean(fake_loss.discriminator),
                     "metrics/discriminator_real_loss": tf.metrics.mean(real_loss.discriminator),
-                    "metrics/discriminator_aux_loss": tf.metrics.mean(aux_loss.discriminator),
-                    "metrics/generator_aux_loss": tf.metrics.mean(aux_loss.generator),
+                    "metrics/discriminator_aux_loss": tf.metrics.mean(aux_loss.discriminator_loss),
+                    "metrics/generator_aux_loss": tf.metrics.mean(aux_loss.generator_loss),
                     "metrics/generator_loss": tf.metrics.mean(generator_loss),
                     "metrics/discriminator_loss": tf.metrics.mean(discriminator_loss),
                     "metrics/accuracy_fake": fake_loss.accuracy,
